@@ -45,7 +45,7 @@ for appearance in $APPEARANCES; do
   first=0
   bundle="build/$appearance.xcresult"
   echo "== tests ($appearance)"
-  TEST_RUNNER_SHOT_PREFIX="$DEVICE-ios$VER-$appearance" \
+  TEST_RUNNER_SHOT_PREFIX="$DEVICE-ios${VER//./}-$appearance" \
     xcodebuild test-without-building -project HelloApp.xcodeproj -scheme HelloApp \
     -destination "$DEST" -derivedDataPath build -resultBundlePath "$bundle" \
     ${only[@]+"${only[@]}"} > "logs/test-$appearance.log" 2>&1 || rc=1
@@ -63,14 +63,18 @@ for f in json.load(sys.stdin).get("testFailures", []):
   mkdir -p "$raw"
   xcrun xcresulttool export attachments --path "$bundle" --output-path "$raw" >/dev/null 2>&1 || continue
   python3 - "$raw" <<'PY'
-import json, shutil, sys
+import json, re, shutil, sys
 raw = sys.argv[1]
 for test in json.load(open(f"{raw}/manifest.json")):
     for a in test["attachments"]:
-        name = a["suggestedHumanReadableName"].split("_")[0]
-        if name.startswith("Screenshot"):  # 系统在失败时自动截的图，保留但加前缀
-            name = "auto-" + a["exportedFileName"].rsplit(".", 1)[0]
-        shutil.copy(f"{raw}/{a['exportedFileName']}", f"out/screenshots/{name}.png")
+        f = a["exportedFileName"]
+        if not f.lower().endswith((".png", ".jpg", ".jpeg")):
+            continue  # 跳过 Xcode 自动录屏
+        # suggestedHumanReadableName 形如 "<name>_<n>_<UUID>.png"
+        name = re.sub(r"_\d+_[0-9A-Fa-f-]{36}\.\w+$", "", a["suggestedHumanReadableName"])
+        if name.startswith("Screenshot"):  # 系统在失败时自动截的图
+            name = "failure-" + f.rsplit(".", 1)[0]
+        shutil.copy(f"{raw}/{f}", f"out/screenshots/{name}.png")
 PY
 done
 ls out/screenshots

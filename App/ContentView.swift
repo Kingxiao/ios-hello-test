@@ -10,30 +10,46 @@ struct ContentView: View {
     @State private var counter = Counter()
 
     var body: some View {
-        VStack(spacing: 24) {
-            Text("Hello from Linux")
-                .font(.title)
-                .accessibilityIdentifier("title")
-            Text("A counter built on Linux and compiled in the cloud.")
-                .font(.body)
-                .multilineTextAlignment(.center)
-            Text("\(counter.value)")
-                .font(.system(size: counterSize, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .accessibilityIdentifier("counterValue")
-            HStack(spacing: 16) {
-                Button("−") { counter.decrement() }
-                    .accessibilityIdentifier("decrement")
-                Button("+") { counter.increment() }
-                    .accessibilityIdentifier("increment")
-                Button("Reset") { counter.reset() }
-                    .accessibilityIdentifier("reset")
+        GeometryReader { geo in
+            // 大字号或小屏时可滚动，避免内容被裁切
+            ScrollView {
+                VStack(spacing: 24) {
+                    Text("Hello from Linux")
+                        .font(.title)
+                        .accessibilityIdentifier("title")
+                    Text("A counter built on Linux and compiled in the cloud.")
+                        .font(.body)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("\(counter.value)")
+                        .font(.system(size: counterSize, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .accessibilityIdentifier("counterValue")
+                    // 横排放不下时改竖排
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 16) { buttons }
+                        VStack(spacing: 12) { buttons }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding()
+                .frame(maxWidth: .infinity, minHeight: geo.size.height)
             }
-            .buttonStyle(.borderedProminent)
+            .scrollBounceBehavior(.basedOnSize)
         }
-        .padding()
         .onAppear { counter = Counter(value: storedValue) }
         .onChange(of: counter.value) { _, newValue in storedValue = newValue }
+    }
+
+    @ViewBuilder private var buttons: some View {
+        Button("−") { counter.decrement() }
+            .accessibilityLabel("Decrease")
+            .accessibilityIdentifier("decrement")
+        Button("+") { counter.increment() }
+            .accessibilityLabel("Increase")
+            .accessibilityIdentifier("increment")
+        Button("Reset") { counter.reset() }
+            .accessibilityIdentifier("reset")
     }
 }
 
