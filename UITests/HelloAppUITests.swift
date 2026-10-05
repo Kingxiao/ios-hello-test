@@ -68,11 +68,26 @@ final class HelloAppUITests: XCTestCase {
     }
 
     /// 苹果自带无障碍审计：对比度、元素标签、点击区域、动态字体等
+    /// 收集全部问题再一起报告；审计偶发超时（Code -56）时重试一次
     @MainActor
     func testAccessibilityAudit() throws {
         let app = launch()
         XCTAssertTrue(app.staticTexts["counterValue"].waitForExistence(timeout: 10))
-        try app.performAccessibilityAudit()
+        var issues: [String] = []
+        for attempt in 1...2 {
+            issues = []
+            do {
+                try app.performAccessibilityAudit { issue in
+                    let el = issue.element
+                    issues.append("[\(issue.compactDescription)] id=\(el?.identifier ?? "-") label=\(el?.label ?? "-") type=\(el?.elementType.rawValue ?? 0)")
+                    return true
+                }
+                break
+            } catch let error as NSError where error.code == -56 && attempt == 1 {
+                continue
+            }
+        }
+        XCTAssertTrue(issues.isEmpty, "无障碍问题：\n" + issues.joined(separator: "\n"))
     }
 
     @MainActor

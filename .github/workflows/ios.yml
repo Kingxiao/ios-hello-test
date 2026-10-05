@@ -73,6 +73,7 @@ jobs:
             logs/
           retention-days: 7
 
+  # iOS 17 运行时在 Xcode 26 runner 上下载失败（Unable to connect to simulator），最低只能测 iOS 18
   min-os:
     name: UI iOS 18 (oldest preinstalled)
     needs: [logic-tests, preflight]
@@ -95,32 +96,6 @@ jobs:
             logs/
           retention-days: 7
 
-  ios17-experiment:
-    name: UI iOS 17 (download runtime, experimental)
-    needs: [logic-tests, preflight]
-    if: (github.event_name == 'workflow_dispatch' && inputs.scope == 'full') || startsWith(github.ref, 'refs/tags/v')
-    runs-on: macos-26
-    timeout-minutes: 45
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v5
-      - name: Download iOS 17 simulator runtime
-        run: |
-          start=$(date +%s)
-          xcodebuild -downloadPlatform iOS -buildVersion 17.5 2>&1 | tail -5
-          echo "download took $(( $(date +%s) - start ))s"
-          xcrun simctl list runtimes
-      - run: brew install xcodegen && xcodegen generate
-      - name: UI tests
-        run: scripts/ci/ui-test.sh iPhone-15 17 light
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ui-ios17
-          path: |
-            out/screenshots/
-            logs/
-          retention-days: 7
 
   release-build:
     name: Device build (unsigned ipa)

@@ -5,6 +5,8 @@ struct ContentView: View {
     static let storageKey = "counterValue"
 
     @AppStorage(storageKey) private var storedValue = 0
+    // 随系统字号缩放，满足 Dynamic Type
+    @ScaledMetric(relativeTo: .largeTitle) private var counterSize: CGFloat = 64
     @State private var counter = Counter()
 
     var body: some View {
@@ -17,7 +19,7 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Text("\(counter.value)")
-                .font(.system(size: 64, weight: .bold, design: .rounded))
+                .font(.system(size: counterSize, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .accessibilityIdentifier("counterValue")
             HStack(spacing: 16) {
