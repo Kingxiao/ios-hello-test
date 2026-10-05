@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# push 前在本地 Docker 里跑逻辑测试，失败就不推，省 CI 额度。
+# push 前本地跑上架静态检查和逻辑测试（Docker），失败就不推，省 CI 额度。
 # 跳过：git push --no-verify
 set -euo pipefail
 root=$(git rev-parse --show-toplevel)
+python3 "$root/scripts/preflight.py" | tail -1 >&2
 if ! command -v docker >/dev/null || ! docker info >/dev/null 2>&1; then
-  echo "pre-push: docker 不可用，跳过本地测试" >&2
+  echo "pre-push: docker 不可用，跳过逻辑测试" >&2
   exit 0
 fi
 echo "pre-push: swift test (swift:6.2 容器)…" >&2
 docker run --rm -v "$root/Packages/CounterKit:/src:ro" -w /src swift:6.2 \
-  swift test --scratch-path /tmp/build 2>&1 | grep -E "Executed|error:|failed" >&2
+  swift test --scratch-path /tmp/build 2>&1 | grep -E "Executed .* tests|error:|failed" | tail -1 >&2

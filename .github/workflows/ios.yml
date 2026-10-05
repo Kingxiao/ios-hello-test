@@ -1,7 +1,8 @@
 name: iOS
 
-# push 到 master 只跑 Linux 逻辑测试；macOS 只在手动触发或打 v* 标签时跑。
-# 手动触发可关掉 UI 测试；真机构建和 ipa 只在打标签时做。
+# push/PR：只跑 Linux 上的逻辑测试和上架静态检查（便宜）
+# 手动触发：scope=quick 只测一个机型浅色；scope=full 跑完整矩阵
+# 打 v* 标签：完整矩阵 + 旧系统 + 未签名 ipa
 on:
   push:
     branches: [master]
@@ -10,20 +11,25 @@ on:
       - 'App/**'
       - 'UITests/**'
       - 'Packages/**'
+      - 'scripts/**'
       - 'project.yml'
       - '.github/workflows/**'
   pull_request:
     paths: *code_paths
   workflow_dispatch:
     inputs:
-      ui_tests:
-        description: '跑 UI 测试并截图（关掉则只编译模拟器版）'
-        type: boolean
-        default: true
+      scope:
+        description: 'quick = 一个机型浅色；full = 全部机型、深浅色、旧系统'
+        type: choice
+        options: [full, quick]
+        default: full
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  FULL: ${{ github.event_name != 'workflow_dispatch' || inputs.scope == 'full' }}
 
 jobs:
   logic-tests:
@@ -35,89 +41,108 @@ jobs:
       - uses: actions/checkout@v5
       - run: swift test --package-path Packages/CounterKit
 
-  ios-build:
-    name: iOS build + UI tests (macOS)
-    needs: logic-tests
+  preflight:
+    name: Store preflight (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - run: python3 scripts/preflight.py
+
+  ui:
+    name: UI ${{ matrix.device }}
+    needs: [logic-tests, preflight]
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-26
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        device: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.scope == 'quick') && '["iPhone-17-Pro"]' || '["iPhone-SE-3rd-generation","iPhone-17-Pro-Max","iPad-A16"]') }}
     steps:
       - uses: actions/checkout@v5
-
-      - name: Show toolchain
-        run: xcodebuild -version
-
-      - name: Generate Xcode project
-        run: |
-          brew install xcodegen
-          xcodegen generate
-
-      - name: Pick simulator
-        if: github.event_name != 'workflow_dispatch' || inputs.ui_tests
-        run: |
-          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
-          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
-          xcrun simctl list devices | grep "$UDID"
-
-      - name: Build for simulator only
-        if: github.event_name == 'workflow_dispatch' && !inputs.ui_tests
-        run: |
-          set -o pipefail
-          xcodebuild build \
-            -project HelloApp.xcodeproj -scheme HelloApp \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO | tee build-sim.log | tail -5
-
-      - name: UI tests on simulator
-        if: github.event_name != 'workflow_dispatch' || inputs.ui_tests
-        run: |
-          set -o pipefail
-          xcodebuild test \
-            -project HelloApp.xcodeproj -scheme HelloApp \
-            -destination "platform=iOS Simulator,id=$SIM_UDID" \
-            -derivedDataPath build \
-            -resultBundlePath build/UITests.xcresult \
-            CODE_SIGNING_ALLOWED=NO | tee build-test.log | grep -E "Test Case|error:|\*\* TEST" || true
-          grep -q "\*\* TEST SUCCEEDED \*\*" build-test.log
-
-      - name: Export screenshots
-        if: always() && hashFiles('build/UITests.xcresult/**') != ''
-        run: |
-          mkdir -p out/raw out/screenshots
-          xcrun xcresulttool export attachments --path build/UITests.xcresult --output-path out/raw
-          python3 - <<'PY'
-          import json, shutil
-          for test in json.load(open("out/raw/manifest.json")):
-              for a in test["attachments"]:
-                  name = a["suggestedHumanReadableName"].split("_")[0] + ".png"
-                  shutil.copy(f"out/raw/{a['exportedFileName']}", f"out/screenshots/{name}")
-                  print(name)
-          PY
-
-      - name: Build for device (unsigned)
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          set -o pipefail
-          xcodebuild build \
-            -project HelloApp.xcodeproj -scheme HelloApp \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO | tee build-device.log | tail -5
-
-      - name: Package unsigned app
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          mkdir -p out/Payload
-          cp -R build/Build/Products/Debug-iphoneos/HelloApp.app out/Payload/
-          (cd out && zip -qr HelloApp-unsigned.ipa Payload)
-
+      - run: brew install xcodegen && xcodegen generate
+      - name: UI tests
+        run: scripts/ci/ui-test.sh "${{ matrix.device }}" latest "${{ env.FULL == 'true' && 'light dark' || 'light' }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: HelloApp-${{ github.sha }}
+          name: ui-${{ matrix.device }}
           path: |
-            out/*.ipa
             out/screenshots/
-            build-*.log
+            logs/
+          retention-days: 7
+
+  min-os:
+    name: UI iOS 18 (oldest preinstalled)
+    needs: [logic-tests, preflight]
+    if: (github.event_name == 'workflow_dispatch' && inputs.scope == 'full') || startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v5
+      - run: brew install xcodegen && xcodegen generate
+      - name: UI tests
+        run: scripts/ci/ui-test.sh iPhone-16 18 light
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-ios18
+          path: |
+            out/screenshots/
+            logs/
+          retention-days: 7
+
+  ios17-experiment:
+    name: UI iOS 17 (download runtime, experimental)
+    needs: [logic-tests, preflight]
+    if: (github.event_name == 'workflow_dispatch' && inputs.scope == 'full') || startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-26
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download iOS 17 simulator runtime
+        run: |
+          start=$(date +%s)
+          xcodebuild -downloadPlatform iOS -buildVersion 17.5 2>&1 | tail -5
+          echo "download took $(( $(date +%s) - start ))s"
+          xcrun simctl list runtimes
+      - run: brew install xcodegen && xcodegen generate
+      - name: UI tests
+        run: scripts/ci/ui-test.sh iPhone-15 17 light
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-ios17
+          path: |
+            out/screenshots/
+            logs/
+          retention-days: 7
+
+  release-build:
+    name: Device build (unsigned ipa)
+    needs: [logic-tests, preflight]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - run: brew install xcodegen && xcodegen generate
+      - name: Build for device
+        run: |
+          set -o pipefail
+          xcodebuild build -project HelloApp.xcodeproj -scheme HelloApp \
+            -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO | tail -5
+          python3 scripts/preflight.py --app build/Build/Products/Debug-iphoneos/HelloApp.app
+          mkdir -p out/Payload
+          cp -R build/Build/Products/Debug-iphoneos/HelloApp.app out/Payload/
+          (cd out && zip -qr HelloApp-unsigned.ipa Payload)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipa
+          path: out/*.ipa
           retention-days: 7
