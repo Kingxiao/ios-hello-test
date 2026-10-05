@@ -16,7 +16,6 @@ struct ContentView: View {
                 .accessibilityIdentifier("title")
             Text("A counter built on Linux and compiled in the cloud.")
                 .font(.body)
-                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Text("\(counter.value)")
                 .font(.system(size: counterSize, weight: .bold, design: .rounded))

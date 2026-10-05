@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 在指定机型和 iOS 版本的模拟器上编译、跑 UI 测试、导出截图。macOS CI 用。
 # 用法：ui-test.sh <设备类型ID后缀，如 iPhone-17-Pro> [iOS 版本前缀，默认最新] [外观，默认 "light dark"]
-# 第一个外观跑全部测试，其余外观只跑截图测试。
+# 第一个外观跑全部测试，其余外观只跑截图和无障碍审计。
 # 注意：macOS 自带 bash 3.2，空数组展开要用 ${a[@]+"${a[@]}"}
 set -euo pipefail
 DEVICE=$1
@@ -41,7 +41,7 @@ first=1
 for appearance in $APPEARANCES; do
   xcrun simctl ui "$UDID" appearance "$appearance"
   only=()
-  [ $first = 1 ] || only=(-only-testing:HelloAppUITests/HelloAppUITests/testScreenshotMatrix)
+  [ $first = 1 ] || only=(-only-testing:HelloAppUITests/HelloAppUITests/testScreenshotMatrix -only-testing:HelloAppUITests/HelloAppUITests/testAccessibilityAudit)
   first=0
   bundle="build/$appearance.xcresult"
   echo "== tests ($appearance)"
