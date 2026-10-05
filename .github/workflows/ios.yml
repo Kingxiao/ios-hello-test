@@ -59,6 +59,18 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO | tee build-device.log | tail -30
 
+      - name: Run in simulator and screenshot
+        run: |
+          set -eo pipefail
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/HelloApp.app
+          xcrun simctl launch "$UDID" com.kingxiao.helloapp
+          sleep 3
+          mkdir -p out
+          xcrun simctl io "$UDID" screenshot out/screenshot.png
+
       - name: Package unsigned app
         run: |
           mkdir -p out/Payload
@@ -72,5 +84,6 @@ jobs:
           path: |
             out/*.ipa
             out/*.zip
+            out/*.png
             build-*.log
           retention-days: 7
