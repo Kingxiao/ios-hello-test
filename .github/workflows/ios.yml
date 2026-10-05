@@ -1,0 +1,76 @@
+name: iOS
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  # 打 v* 标签时才跑 macOS 编译，省 macOS 分钟数（私有库按 10 倍计费）
+  # push 到 master 只跑 Linux 上的逻辑测试
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  logic-tests:
+    name: Logic tests (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.2
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - run: swift test --package-path Packages/CounterKit
+
+  ios-build:
+    name: iOS build (macOS)
+    needs: logic-tests
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build for simulator (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project HelloApp.xcodeproj -scheme HelloApp \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO | tee build-sim.log | tail -30
+
+      - name: Build for device (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project HelloApp.xcodeproj -scheme HelloApp \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO | tee build-device.log | tail -30
+
+      - name: Package unsigned app
+        run: |
+          mkdir -p out/Payload
+          cp -R build/Build/Products/Debug-iphoneos/HelloApp.app out/Payload/
+          (cd out && zip -qr HelloApp-unsigned.ipa Payload)
+          (cd build/Build/Products/Debug-iphonesimulator && zip -qr ../../../../out/HelloApp-simulator.zip HelloApp.app)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HelloApp-${{ github.sha }}
+          path: |
+            out/*.ipa
+            out/*.zip
+            build-*.log
+          retention-days: 7

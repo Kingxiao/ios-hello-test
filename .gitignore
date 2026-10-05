@@ -1,0 +1,16 @@
+# XcodeGen 生成物
+*.xcodeproj/
+*.xcworkspace/
+# 构建产物
+build/
+DerivedData/
+.build/
+.swiftpm/
+*.ipa
+*.xcarchive
+# 签名材料绝不进库
+*.p12
+*.mobileprovision
+*.p8
+*.cer
+.DS_Store
