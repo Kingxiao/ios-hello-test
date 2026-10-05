@@ -5,7 +5,7 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
-  # 打 v* 标签时才跑 macOS 编译，省 macOS 分钟数（私有库按 10 倍计费）
+  # 打 v* 标签或手动触发才跑 macOS（私有库按 10 倍计费）
   # push 到 master 只跑 Linux 上的逻辑测试
 
 concurrency:
@@ -23,7 +23,7 @@ jobs:
       - run: swift test --package-path Packages/CounterKit
 
   ios-build:
-    name: iOS build (macOS)
+    name: iOS build + UI tests (macOS)
     needs: logic-tests
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-26
@@ -32,23 +32,43 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Show toolchain
-        run: |
-          xcodebuild -version
-          xcrun simctl list runtimes
+        run: xcodebuild -version
 
       - name: Generate Xcode project
         run: |
           brew install xcodegen
           xcodegen generate
 
-      - name: Build for simulator (unsigned)
+      - name: Pick simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl list devices | grep "$UDID"
+
+      - name: UI tests on simulator
         run: |
           set -o pipefail
-          xcodebuild build \
+          xcodebuild test \
             -project HelloApp.xcodeproj -scheme HelloApp \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
             -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO | tee build-sim.log | tail -30
+            -resultBundlePath build/UITests.xcresult \
+            CODE_SIGNING_ALLOWED=NO | tee build-test.log | grep -E "Test Case|error:|\*\* TEST" || true
+          grep -q "\*\* TEST SUCCEEDED \*\*" build-test.log
+
+      - name: Export screenshots
+        if: always()
+        run: |
+          mkdir -p out/raw out/screenshots
+          xcrun xcresulttool export attachments --path build/UITests.xcresult --output-path out/raw
+          python3 - <<'PY'
+          import json, shutil
+          for test in json.load(open("out/raw/manifest.json")):
+              for a in test["attachments"]:
+                  name = a["suggestedHumanReadableName"].split("_")[0] + ".png"
+                  shutil.copy(f"out/raw/{a['exportedFileName']}", f"out/screenshots/{name}")
+                  print(name)
+          PY
 
       - name: Build for device (unsigned)
         run: |
@@ -57,33 +77,20 @@ jobs:
             -project HelloApp.xcodeproj -scheme HelloApp \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO | tee build-device.log | tail -30
-
-      - name: Run in simulator and screenshot
-        run: |
-          set -eo pipefail
-          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
-          xcrun simctl boot "$UDID"
-          xcrun simctl bootstatus "$UDID" -b
-          xcrun simctl install "$UDID" build/Build/Products/Debug-iphonesimulator/HelloApp.app
-          xcrun simctl launch "$UDID" com.kingxiao.helloapp
-          sleep 3
-          mkdir -p out
-          xcrun simctl io "$UDID" screenshot out/screenshot.png
+            CODE_SIGNING_ALLOWED=NO | tee build-device.log | tail -5
 
       - name: Package unsigned app
         run: |
           mkdir -p out/Payload
           cp -R build/Build/Products/Debug-iphoneos/HelloApp.app out/Payload/
           (cd out && zip -qr HelloApp-unsigned.ipa Payload)
-          (cd build/Build/Products/Debug-iphonesimulator && zip -qr ../../../../out/HelloApp-simulator.zip HelloApp.app)
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: HelloApp-${{ github.sha }}
           path: |
             out/*.ipa
-            out/*.zip
-            out/*.png
+            out/screenshots/
             build-*.log
           retention-days: 7
