@@ -5,6 +5,7 @@ struct ContentView: View {
     static let storageKey = "counterValue"
 
     @AppStorage(storageKey) private var storedValue = 0
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     // 随系统字号缩放，满足 Dynamic Type
     @ScaledMetric(relativeTo: .largeTitle) private var counterSize: CGFloat = 64
     @State private var counter = Counter()
@@ -16,6 +17,7 @@ struct ContentView: View {
                 VStack(spacing: 24) {
                     Text("Hello from Linux")
                         .font(.title)
+                        .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("title")
                     Text("A counter built on Linux and compiled in the cloud.")
                         .font(.body)
@@ -25,16 +27,24 @@ struct ContentView: View {
                         .font(.system(size: counterSize, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .accessibilityIdentifier("counterValue")
-                    // 横排放不下时改竖排
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 16) { buttons }
-                        VStack(spacing: 12) { buttons }
+                    // 无障碍字号明确改竖排，避免按钮文字被横向压缩。
+                    Group {
+                        if dynamicTypeSize.isAccessibilitySize {
+                            VStack(spacing: 12) { buttons }
+                        } else {
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 16) { buttons }
+                                VStack(spacing: 12) { buttons }
+                            }
+                        }
                     }
+                    .font(.body)
                     .buttonStyle(.borderedProminent)
                 }
                 .padding()
                 .frame(maxWidth: .infinity, minHeight: geo.size.height)
             }
+            .accessibilityIdentifier("counterScroll")
             .scrollBounceBehavior(.basedOnSize)
         }
         .onAppear { counter = Counter(value: storedValue) }
@@ -42,13 +52,19 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var buttons: some View {
-        Button("−") { counter.decrement() }
+        Button { counter.decrement() } label: {
+            Text("−").fixedSize()
+        }
             .accessibilityLabel("Decrease")
             .accessibilityIdentifier("decrement")
-        Button("+") { counter.increment() }
+        Button { counter.increment() } label: {
+            Text("+").fixedSize()
+        }
             .accessibilityLabel("Increase")
             .accessibilityIdentifier("increment")
-        Button("Reset") { counter.reset() }
+        Button { counter.reset() } label: {
+            Text("Reset").fixedSize()
+        }
             .accessibilityIdentifier("reset")
     }
 }

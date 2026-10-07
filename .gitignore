@@ -13,4 +13,13 @@ DerivedData/
 *.mobileprovision
 *.p8
 *.cer
+*.pem
+*.key
+.env
+.env.*
+out/
+logs/
+*.log
+artifacts/
+__pycache__/
 .DS_Store

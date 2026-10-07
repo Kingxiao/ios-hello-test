@@ -22,6 +22,11 @@ print(rs[-1]["identifier"], rs[-1]["version"])
 ' "$OS")
 [ -n "${RUNTIME:-}" ] || { echo "找不到 iOS $OS 运行时"; exit 1; }
 echo "== $DEVICE / iOS $VER ($RUNTIME) / $(xcodebuild -version | head -1)"
+{
+  sw_vers
+  xcodebuild -version
+  printf 'Commit: %s\nDevice: %s\nRuntime: %s\n' "$(git rev-parse HEAD)" "$DEVICE" "$RUNTIME"
+} > logs/environment.txt
 
 UDID=$(xcrun simctl create "ci-$DEVICE" "com.apple.CoreSimulator.SimDeviceType.$DEVICE" "$RUNTIME")
 xcrun simctl boot "$UDID"
@@ -41,41 +46,41 @@ first=1
 for appearance in $APPEARANCES; do
   xcrun simctl ui "$UDID" appearance "$appearance"
   only=()
+  evidence_args=()
+  [ $first = 0 ] || evidence_args=(--with-flow)
   [ $first = 1 ] || only=(-only-testing:HelloAppUITests/HelloAppUITests/testScreenshotMatrix -only-testing:HelloAppUITests/HelloAppUITests/testAccessibilityAudit)
   first=0
   bundle="build/$appearance.xcresult"
   echo "== tests ($appearance)"
-  TEST_RUNNER_SHOT_PREFIX="$DEVICE-ios${VER//./}-$appearance" \
+  prefix="$DEVICE-ios${VER//./}-$appearance"
+  TEST_RUNNER_SHOT_PREFIX="$prefix" \
     xcodebuild test-without-building -project HelloApp.xcodeproj -scheme HelloApp \
     -destination "$DEST" -derivedDataPath build -resultBundlePath "$bundle" \
+    -parallel-testing-enabled NO \
     ${only[@]+"${only[@]}"} > "logs/test-$appearance.log" 2>&1 || rc=1
   grep -E "Test Case .*(passed|failed)|\*\* TEST" "logs/test-$appearance.log" || true
 
   # 失败详情（无障碍审计的问题会列在这里）
-  xcrun xcresulttool get test-results summary --path "$bundle" 2>/dev/null | python3 -c '
+  if ! xcrun xcresulttool get test-results summary --path "$bundle" > "logs/summary-$appearance.json"; then
+    echo "Failed to export test summary ($appearance)" >&2
+    rc=1
+  fi
+  python3 -c '
 import json, sys
 for f in json.load(sys.stdin).get("testFailures", []):
     print("  FAIL", f.get("testName"), "→", f.get("failureText"))
-' || true
+' < "logs/summary-$appearance.json" || rc=1
 
   # 导出截图，按 attachment 名重命名
   raw="out/raw-$appearance"
   mkdir -p "$raw"
-  xcrun xcresulttool export attachments --path "$bundle" --output-path "$raw" >/dev/null 2>&1 || continue
-  python3 - "$raw" <<'PY'
-import json, re, shutil, sys
-raw = sys.argv[1]
-for test in json.load(open(f"{raw}/manifest.json")):
-    for a in test["attachments"]:
-        f = a["exportedFileName"]
-        if not f.lower().endswith((".png", ".jpg", ".jpeg")):
-            continue  # 跳过 Xcode 自动录屏
-        # suggestedHumanReadableName 形如 "<name>_<n>_<UUID>.png"
-        name = re.sub(r"_\d+_[0-9A-Fa-f-]{36}\.\w+$", "", a["suggestedHumanReadableName"])
-        if name.startswith("Screenshot"):  # 系统在失败时自动截的图
-            name = "failure-" + f.rsplit(".", 1)[0]
-        shutil.copy(f"{raw}/{f}", f"out/screenshots/{name}.png")
-PY
+  if ! xcrun xcresulttool export attachments --path "$bundle" --output-path "$raw" > "logs/export-$appearance.log" 2>&1; then
+    echo "Failed to export screenshots ($appearance); original xcresult retained" >&2
+    rc=1
+    continue
+  fi
+  python3 scripts/export-evidence.py "$raw" out/screenshots "$prefix" \
+    ${evidence_args[@]+"${evidence_args[@]}"} || rc=1
 done
 ls out/screenshots
 exit $rc

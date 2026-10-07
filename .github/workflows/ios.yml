@@ -1,7 +1,7 @@
 name: iOS
 
-# push/PR：只跑 Linux 上的逻辑测试和上架静态检查（便宜）
-# 手动触发：scope=quick 只测一个机型浅色；scope=full 跑完整矩阵
+# push：跑 Linux 上的逻辑测试和上架静态检查
+# PR/手动 quick：iPhone SE 浅色回归；手动 full：完整矩阵、旧系统、未签名 ipa
 # 打 v* 标签：完整矩阵 + 旧系统 + 未签名 ipa
 on:
   push:
@@ -19,10 +19,13 @@ on:
   workflow_dispatch:
     inputs:
       scope:
-        description: 'quick = 一个机型浅色；full = 全部机型、深浅色、旧系统'
+        description: 'quick = SE 浅色；full = 全部机型、深浅色、旧系统、未签名真机构建'
         type: choice
         options: [full, quick]
         default: full
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -39,6 +42,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - run: swift test --package-path Packages/CounterKit
 
   preflight:
@@ -47,31 +52,38 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s scripts/tests -v
       - run: python3 scripts/preflight.py
 
   ui:
     name: UI ${{ matrix.device }}
     needs: [logic-tests, preflight]
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-26
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        device: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.scope == 'quick') && '["iPhone-17-Pro"]' || '["iPhone-SE-3rd-generation","iPhone-17-Pro-Max","iPad-A16"]') }}
+        device: ${{ fromJSON((github.event_name == 'pull_request' || inputs.scope == 'quick') && '["iPhone-SE-3rd-generation"]' || '["iPhone-SE-3rd-generation","iPhone-17-Pro-Max","iPad-A16"]') }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - run: brew install xcodegen && xcodegen generate
       - name: UI tests
-        run: scripts/ci/ui-test.sh "${{ matrix.device }}" latest "${{ env.FULL == 'true' && 'light dark' || 'light' }}"
-      - uses: actions/upload-artifact@v4
+        run: scripts/ci/ui-test.sh "${{ matrix.device }}" latest "${{ github.event_name != 'pull_request' && env.FULL == 'true' && 'light dark' || 'light' }}"
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ui-${{ matrix.device }}
           path: |
             out/screenshots/
             logs/
+            build/*.xcresult/
           retention-days: 7
+          if-no-files-found: error
 
   # iOS 17 运行时在 Xcode 26 runner 上下载失败（Unable to connect to simulator），最低只能测 iOS 18
   min-os:
@@ -84,40 +96,51 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - run: brew install xcodegen && xcodegen generate
       - name: UI tests
         run: scripts/ci/ui-test.sh iPhone-16 18 light
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: ui-ios18
           path: |
             out/screenshots/
             logs/
+            build/*.xcresult/
           retention-days: 7
+          if-no-files-found: error
 
 
   release-build:
     name: Device build (unsigned ipa)
     needs: [logic-tests, preflight]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: (github.event_name == 'workflow_dispatch' && inputs.scope == 'full') || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - run: brew install xcodegen && xcodegen generate
       - name: Build for device
         run: |
           set -o pipefail
           xcodebuild build -project HelloApp.xcodeproj -scheme HelloApp \
+            -configuration Release \
             -destination 'generic/platform=iOS' -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO | tail -5
-          python3 scripts/preflight.py --app build/Build/Products/Debug-iphoneos/HelloApp.app
+            CODE_SIGNING_ALLOWED=NO | tee device-build.log
+          python3 scripts/preflight.py --app build/Build/Products/Release-iphoneos/HelloApp.app
           mkdir -p out/Payload
-          cp -R build/Build/Products/Debug-iphoneos/HelloApp.app out/Payload/
+          cp -R build/Build/Products/Release-iphoneos/HelloApp.app out/Payload/
           (cd out && zip -qr HelloApp-unsigned.ipa Payload)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: ipa
-          path: out/*.ipa
+          path: |
+            out/*.ipa
+            device-build.log
           retention-days: 7
+          if-no-files-found: error

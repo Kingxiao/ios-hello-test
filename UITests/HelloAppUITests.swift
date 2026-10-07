@@ -28,22 +28,35 @@ final class HelloAppUITests: XCTestCase {
         let value = app.staticTexts["counterValue"]
         XCTAssertTrue(value.waitForExistence(timeout: 10))
         XCTAssertEqual(value.label, "0")
+        snapshot("\(shotPrefix)-flow-01-launch")
 
-        for _ in 0..<3 { app.buttons["increment"].tap() }
+        for expected in 1...3 {
+            tapButton("increment", in: app)
+            XCTAssertEqual(value.label, "\(expected)")
+        }
         XCTAssertEqual(value.label, "3")
-        app.buttons["decrement"].tap()
+        snapshot("\(shotPrefix)-flow-02-increment")
+        tapButton("decrement", in: app)
         XCTAssertEqual(value.label, "2")
-        app.buttons["reset"].tap()
-        app.buttons["decrement"].tap()
+        snapshot("\(shotPrefix)-flow-03-decrement")
+        tapButton("reset", in: app)
         XCTAssertEqual(value.label, "0")
+        snapshot("\(shotPrefix)-flow-04-reset")
+        tapButton("decrement", in: app)
+        XCTAssertEqual(value.label, "0")
+        snapshot("\(shotPrefix)-flow-05-floor")
 
         // 持久化：改成 5，不带重置参数重启，值应保留
-        for _ in 0..<5 { app.buttons["increment"].tap() }
+        for expected in 1...5 {
+            tapButton("increment", in: app)
+            XCTAssertEqual(value.label, "\(expected)")
+        }
         app.terminate()
         app = XCUIApplication()
         app.launch()
         XCTAssertTrue(app.staticTexts["counterValue"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.staticTexts["counterValue"].label, "5")
+        snapshot("\(shotPrefix)-flow-06-persistence")
     }
 
     /// 语言 × 字号 截图；深浅色由 CI 在外层切换
@@ -57,14 +70,54 @@ final class HelloAppUITests: XCTestCase {
                 let titleText = app.staticTexts["title"]
                 XCTAssertTrue(titleText.waitForExistence(timeout: 10))
                 XCTAssertEqual(titleText.label, title, "\(language) 本地化未生效")
-                app.buttons["increment"].tap()
-                app.buttons["increment"].tap()
-                // 大字号下按钮必须仍在屏幕内、可点
-                XCTAssertTrue(app.buttons["reset"].isHittable, "\(language)/\(sizeName) Reset 按钮不可点")
-                snapshot("\(shotPrefix)-\(language)-\(sizeName)")
+                let value = app.staticTexts["counterValue"]
+                XCTAssertEqual(value.label, "0")
+                tapButton("increment", in: app)
+                XCTAssertEqual(value.label, "1")
+                tapButton("increment", in: app)
+                XCTAssertEqual(value.label, "2")
+                // 数值截图和点击检查分别滚动到目标，内容无需挤进同一屏。
+                XCTAssertTrue(reveal(value, in: app), "\(language)/\(sizeName) 数值未完整显示")
+                snapshot("\(shotPrefix)-\(language)-\(sizeName)-count-2")
+                tapButton("reset", in: app)
+                XCTAssertEqual(value.label, "0")
+                XCTAssertTrue(reveal(value, in: app), "\(language)/\(sizeName) 重置数值未完整显示")
+                snapshot("\(shotPrefix)-\(language)-\(sizeName)-reset-0")
                 app.terminate()
             }
         }
+    }
+
+    /// 不能只检查 isHittable：按钮部分露出时也可能可点击。
+    @MainActor
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication) -> Bool {
+        let scroll = app.scrollViews["counterScroll"]
+        guard element.waitForExistence(timeout: 10), scroll.exists else { return false }
+        for attempt in 0...8 {
+            let viewport = scroll.frame
+            let frame = element.frame
+            if !frame.isEmpty && viewport.contains(frame) && element.isHittable {
+                return true
+            }
+            if attempt == 8 { break }
+            if frame.minY < viewport.minY {
+                scroll.swipeDown(velocity: .slow)
+            } else {
+                scroll.swipeUp(velocity: .slow)
+            }
+        }
+        return false
+    }
+
+    @MainActor
+    private func tapButton(_ identifier: String, in app: XCUIApplication,
+                           file: StaticString = #filePath, line: UInt = #line) {
+        let button = app.buttons[identifier]
+        guard reveal(button, in: app) else {
+            XCTFail("\(identifier) 滚动后仍未完整位于视口内或不可点击", file: file, line: line)
+            return
+        }
+        button.tap()
     }
 
     /// 苹果自带无障碍审计：对比度、元素标签、点击区域、动态字体等
